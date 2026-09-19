@@ -11,7 +11,6 @@ only that.
 """
 
 import logging
-import threading
 from datetime import datetime
 
 import render
@@ -21,11 +20,6 @@ logger = logging.getLogger(__name__)
 STEP = "thumbnails"
 DIRECTORY = "thumbnails"
 OWNED_KEY = "thumbnail"
-
-# One render at a time per clip, so a double click does not run two ffmpeg
-# passes over the same output file. Core's per-clip guard went with the step.
-_rendering = set()
-_rendering_lock = threading.Lock()
 
 
 def _default_settings() -> dict:
@@ -186,90 +180,36 @@ class ThumbnailStep:
             raise RuntimeError("No thumbnail could be drawn for any clip.")
 
 
-def _preview_payload(meta, index: int) -> dict:
-    highlight = meta.read_highlight(index)
-    settings = _settings_of(highlight)
-    filename = settings.get("generated_filename")
-    exists = bool(filename and (meta.project_dir() / DIRECTORY / filename).exists())
-    return {
-        "settings": settings,
-        # The title as an OverlayText, the shape the clip page's preview draws.
-        "title": _title_overlay(highlight, settings),
-        # The app resolves the burn face from font metrics it owns; the preview
-        # falls back to the family named on the overlay when this is null.
-        "title_font": None,
-        "duration": _clip_duration(highlight),
-        "exists": exists,
-    }
-
-
 def register(host):
-    """Wire the plugin into the host: one step, three routes, one cleanup hook."""
+    """Wire the plugin in: a pipeline step, a run action, and a cleanup hook.
+
+    No UI of its own — the app's Plugins menu runs the action on the clips the
+    user selected, or on all of them.
+    """
     step = ThumbnailStep(host)
     host.register_step(STEP, step, {"command": STEP, "depends_on": ["highlights"], "auto_run": False})
 
-    def get_thumbnail(request, project_id, index):
+    def render(project_id, clips):
+        """Render stills for the given clip indices, or every clip when None.
+
+        Runs in the background; per-clip failures are logged and skipped so one
+        bad frame does not cost the rest. Each render writes its result onto the
+        highlight through the metadata manager, which is how the grid learns a
+        still now exists.
+        """
         meta = host.metadata(project_id)
-        try:
-            payload = _preview_payload(meta, int(index))
-        except IndexError:
-            request.send_cors_error(404, "No clip at that index")
-            return
-        request.send_json_response(payload)
+        indices = (
+            [int(i) for i in clips]
+            if clips is not None
+            else list(range(meta.highlight_count()))
+        )
+        for index in indices:
+            try:
+                step._render_one(meta, index)
+            except Exception as e:
+                logger.warning(f"Skipped thumbnail for clip {index}: {e}")
 
-    def put_thumbnail(request, project_id, index):
-        length = int(request.headers.get("Content-Length", 0))
-        import json
-        body = json.loads(request.rfile.read(length)) if length else {}
-        meta = host.metadata(project_id)
-        index = int(index)
-        try:
-            highlight = meta.read_highlight(index)
-        except IndexError:
-            request.send_cors_error(404, f"No clip at index {index}")
-            return
-        payload = body.get("thumbnail")
-        if isinstance(payload, dict):
-            settings = _default_settings()
-            settings.update({k: payload.get(k, settings[k]) for k in settings})
-            # The rendered file is not the form's to change: keep what a render
-            # already produced so a settings save does not orphan the image.
-            stored = highlight.get(OWNED_KEY)
-            if isinstance(stored, dict):
-                settings["generated_filename"] = stored.get("generated_filename")
-                settings["generated_at"] = stored.get("generated_at")
-            meta.write_highlight(index, OWNED_KEY, settings)
-            request.send_json_response({"status": "success", "thumbnail": settings})
-        else:
-            meta.write_highlight(index, OWNED_KEY, None)
-            request.send_json_response({"status": "success", "thumbnail": None})
-
-    def post_thumbnail(request, project_id, index):
-        index = int(index)
-        key = f"{project_id}:{index}"
-        with _rendering_lock:
-            if key in _rendering:
-                request.send_cors_error(409, "This thumbnail is already being made.")
-                return
-            _rendering.add(key)
-        try:
-            meta = host.metadata(project_id)
-            step._render_one(meta, index)
-            request.send_json_response({
-                "status": "success",
-                "thumbnail": meta.read_highlight(index).get(OWNED_KEY),
-            })
-        except IndexError:
-            request.send_cors_error(404, "No clip at that index")
-        except FileNotFoundError as e:
-            request.send_cors_error(409, str(e))
-        finally:
-            with _rendering_lock:
-                _rendering.discard(key)
-
-    host.register_route("GET", "/project/{project_id}/clip/{index}/thumbnail", get_thumbnail)
-    host.register_route("PUT", "/project/{project_id}/clip/{index}/thumbnail", put_thumbnail)
-    host.register_route("POST", "/project/{project_id}/clip/{index}/thumbnail", post_thumbnail)
+    host.register_action("render", "Render thumbnails", render)
 
     def on_highlight_deleted(project_id, index, removed):
         """Delete the still made for a highlight that has been removed."""

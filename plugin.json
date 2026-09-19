@@ -4,19 +4,12 @@
   "owns": ["highlights[].thumbnail"],
   "requirements": "requirements.txt",
   "step": "thumbnails",
-  "routes": [
-    "GET /project/{project_id}/clip/{index}/thumbnail",
-    "PUT /project/{project_id}/clip/{index}/thumbnail",
-    "POST /project/{project_id}/clip/{index}/thumbnail"
+  "actions": [
+    { "id": "render", "title": "Render thumbnails" }
   ],
   "ui": {
     "screens": [
-      {
-        "id": "thumbnail-editor",
-        "title": "Thumbnail",
-        "scope": "clip",
-        "path": "ui/index.html"
-      }
+      { "id": "thumbnail", "title": "Thumbnail", "path": "ui/index.html" }
     ]
   }
 }

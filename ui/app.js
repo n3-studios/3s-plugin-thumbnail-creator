@@ -1,134 +1,72 @@
-// The thumbnail editor, shipped by the plugin and opened by core in an overlay
-// iframe. It is served from the app's own origin, so these fetches are
-// same-origin: the routes are the plugin's own (registered on the host), and
-// the rendered image is a static project file.
+// The thumbnail plugin's dialog, opened from the app's Plugins menu (OBS-style)
+// and scoped to the clips the user selected on the project page. It is served
+// from the app's own origin, so /plugins/run is a same-origin call.
 //
-// Core passes the clip context in the URL and listens for two messages back:
-//   { type: 'plugin:changed' } — this clip's data moved; refresh the views.
+// Context arrives in the URL: projectId, and clips as a comma-separated list of
+// highlight indices (empty means the user selected none — "render all" is then
+// the sensible action).
+//
+// Core listens for two messages back:
+//   { type: 'plugin:changed' } — thumbnails changed; refresh the grid.
 //   { type: 'plugin:close' }   — close the overlay.
 
 (function () {
   const params = new URLSearchParams(location.search);
   const projectId = params.get('projectId');
-  const clipIndex = params.get('clipIndex');
-  const base = `/project/${projectId}/clip/${clipIndex}/thumbnail`;
+  const clips = (params.get('clips') || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '')
+    .map((s) => parseInt(s, 10))
+    .filter((n) => Number.isInteger(n));
 
   const el = (id) => document.getElementById(id);
-  const preview = el('preview');
-  const frame = el('frame');
-  const frameLabel = el('frameLabel');
-  const showOverlay = el('showOverlay');
-  const showCaptions = el('showCaptions');
-  const extra = el('extra');
   const status = el('status');
+  const selectedBtn = el('renderSelected');
 
-  let settings = null; // the ThumbnailSettings this clip carries
+  el('summary').textContent =
+    clips.length > 0
+      ? `${clips.length} selected clip${clips.length === 1 ? '' : 's'}`
+      : 'the selected clips';
+
+  // Nothing selected — only "Render all" makes sense.
+  if (clips.length === 0) selectedBtn.disabled = true;
 
   const setStatus = (text, isError) => {
     status.textContent = text || '';
     status.className = isError ? 'error' : '';
   };
 
-  const notifyChanged = () =>
-    window.parent.postMessage({ type: 'plugin:changed' }, '*');
-
-  const showImage = (filename, version) => {
-    if (!filename) {
-      preview.innerHTML = '<span class="empty">No thumbnail rendered yet.</span>';
-      return;
-    }
-    const v = version ? `?v=${encodeURIComponent(version)}` : '';
-    preview.innerHTML =
-      `<img alt="Thumbnail" src="/projects/static/${projectId}/thumbnails/${filename}${v}" />`;
-  };
-
-  const fillFromSettings = (data) => {
-    settings = data.settings || {
-      frame_time: 0, show_captions: false, show_overlay: true, extra: null,
-      generated_filename: null, generated_at: null,
-    };
-    frame.max = String(Math.max(0, (data.duration || 0) - 0.05));
-    frame.value = String(settings.frame_time || 0);
-    frameLabel.textContent = Number(frame.value).toFixed(1);
-    showOverlay.checked = settings.show_overlay !== false;
-    showCaptions.checked = !!settings.show_captions;
-    extra.value = settings.extra && settings.extra.text ? settings.extra.text : '';
-    showImage(settings.generated_filename, settings.generated_at);
-  };
-
-  const collect = () => {
-    const text = extra.value.trim();
-    return {
-      frame_time: parseFloat(frame.value) || 0,
-      show_captions: showCaptions.checked,
-      show_overlay: showOverlay.checked,
-      extra: text ? { enabled: true, text } : null,
-      generated_filename: settings ? settings.generated_filename : null,
-      generated_at: settings ? settings.generated_at : null,
-    };
-  };
-
-  const load = async () => {
+  const run = async (which) => {
+    setStatus('Starting…');
     try {
-      const res = await fetch(base);
-      if (!res.ok) throw new Error(`Load failed (${res.status})`);
-      fillFromSettings(await res.json());
-      setStatus('');
-    } catch (e) {
-      setStatus(String(e.message || e), true);
-    }
-  };
-
-  const save = async () => {
-    setStatus('Saving…');
-    try {
-      const res = await fetch(base, {
-        method: 'PUT',
+      const body = {
+        plugin: 'thumbnail',
+        action: 'render',
+        project_id: projectId,
+      };
+      if (which === 'selected') body.clips = clips;
+      const res = await fetch('/plugins/run', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thumbnail: collect() }),
+        body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(`Save failed (${res.status})`);
-      const data = await res.json();
-      if (data.thumbnail) settings = data.thumbnail;
-      setStatus('Saved.');
-      notifyChanged();
-    } catch (e) {
-      setStatus(String(e.message || e), true);
-    }
-  };
-
-  const render = async () => {
-    setStatus('Rendering…');
-    try {
-      // Save first, so the render uses what is on screen.
-      await fetch(base, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thumbnail: collect() }),
-      });
-      const res = await fetch(base, { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `Render failed (${res.status})`);
+        throw new Error(err.error || `Failed (${res.status})`);
       }
-      const data = await res.json();
-      if (data.thumbnail) settings = data.thumbnail;
-      showImage(settings.generated_filename, settings.generated_at);
-      setStatus('Rendered.');
-      notifyChanged();
+      // The render runs in the background; the grid refreshes when the job
+      // leaves /active_processes. Tell core to start watching.
+      window.parent.postMessage({ type: 'plugin:changed' }, '*');
+      setStatus('Rendering started. The clips update as it finishes.');
     } catch (e) {
       setStatus(String(e.message || e), true);
     }
   };
 
-  frame.addEventListener('input', () => {
-    frameLabel.textContent = Number(frame.value).toFixed(1);
-  });
-  el('save').addEventListener('click', save);
-  el('render').addEventListener('click', render);
+  selectedBtn.addEventListener('click', () => run('selected'));
+  el('renderAll').addEventListener('click', () => run('all'));
   el('close').addEventListener('click', () =>
     window.parent.postMessage({ type: 'plugin:close' }, '*')
   );
-
-  load();
 })();
