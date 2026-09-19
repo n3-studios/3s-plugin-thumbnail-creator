@@ -180,11 +180,36 @@ class ThumbnailStep:
             raise RuntimeError("No thumbnail could be drawn for any clip.")
 
 
-def register(host):
-    """Wire the plugin in: a pipeline step, a run action, and a cleanup hook.
+def _preview_payload(meta, index: int) -> dict:
+    """What the editor dialog needs to draw and scrub one clip's thumbnail.
 
-    No UI of its own — the app's Plugins menu runs the action on the clips the
-    user selected, or on all of them.
+    The source video (not the cut clip) and the clip's start, so the dialog can
+    scrub to `start + frame_time`; the resolved title as an OverlayText for the
+    live overlay; and what the last render produced.
+    """
+    highlight = meta.read_highlight(index)
+    settings = _settings_of(highlight)
+    files = meta.read("files", {}) or {}
+    original = files.get("original_file")
+    source_url = f"/projects/static/{meta.project_dir().name}/{original}" if original else None
+    filename = settings.get("generated_filename")
+    exists = bool(filename and (meta.project_dir() / DIRECTORY / filename).exists())
+    return {
+        "settings": settings,
+        "title": _title_overlay(highlight, settings),
+        "title_font": None,
+        "start": float(highlight.get("start", 0.0)),
+        "duration": _clip_duration(highlight),
+        "source_url": source_url,
+        "exists": exists,
+    }
+
+
+def register(host):
+    """Wire the plugin in: a step, a run action, per-clip editor routes, a hook.
+
+    The Plugins menu opens the editor dialog (which uses the routes) and runs
+    the action on the selected clips or on all of them.
     """
     step = ThumbnailStep(host)
     host.register_step(STEP, step, {"command": STEP, "depends_on": ["highlights"], "auto_run": False})
@@ -210,6 +235,63 @@ def register(host):
                 logger.warning(f"Skipped thumbnail for clip {index}: {e}")
 
     host.register_action("render", "Render thumbnails", render)
+
+    # Per-clip editor routes the dialog calls: read one clip's settings + frame,
+    # save them, and render one clip now.
+    def get_thumbnail(request, project_id, index):
+        meta = host.metadata(project_id)
+        try:
+            payload = _preview_payload(meta, int(index))
+        except IndexError:
+            request.send_cors_error(404, "No clip at that index")
+            return
+        request.send_json_response(payload)
+
+    def put_thumbnail(request, project_id, index):
+        import json
+        length = int(request.headers.get("Content-Length", 0))
+        body = json.loads(request.rfile.read(length)) if length else {}
+        meta = host.metadata(project_id)
+        index = int(index)
+        try:
+            highlight = meta.read_highlight(index)
+        except IndexError:
+            request.send_cors_error(404, f"No clip at index {index}")
+            return
+        payload = body.get("thumbnail")
+        if isinstance(payload, dict):
+            settings = _default_settings()
+            settings.update({k: payload.get(k, settings[k]) for k in settings})
+            # A settings save describes the next render; keep what a render
+            # already produced so it is not orphaned.
+            stored = highlight.get(OWNED_KEY)
+            if isinstance(stored, dict):
+                settings["generated_filename"] = stored.get("generated_filename")
+                settings["generated_at"] = stored.get("generated_at")
+            meta.write_highlight(index, OWNED_KEY, settings)
+            request.send_json_response({"status": "success", "thumbnail": settings})
+        else:
+            meta.write_highlight(index, OWNED_KEY, None)
+            request.send_json_response({"status": "success", "thumbnail": None})
+
+    def post_thumbnail(request, project_id, index):
+        meta = host.metadata(project_id)
+        try:
+            step._render_one(meta, int(index))
+        except IndexError:
+            request.send_cors_error(404, "No clip at that index")
+            return
+        except FileNotFoundError as e:
+            request.send_cors_error(409, str(e))
+            return
+        request.send_json_response({
+            "status": "success",
+            "thumbnail": meta.read_highlight(int(index)).get(OWNED_KEY),
+        })
+
+    host.register_route("GET", "/project/{project_id}/clip/{index}/thumbnail", get_thumbnail)
+    host.register_route("PUT", "/project/{project_id}/clip/{index}/thumbnail", put_thumbnail)
+    host.register_route("POST", "/project/{project_id}/clip/{index}/thumbnail", post_thumbnail)
 
     def on_highlight_deleted(project_id, index, removed):
         """Delete the still made for a highlight that has been removed."""
