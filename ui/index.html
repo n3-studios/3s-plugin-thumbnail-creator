@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Thumbnail</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0; padding: 16px;
+      background: transparent;
+      color: inherit;
+    }
+    .row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+    .inline { display: flex; align-items: center; gap: 10px; }
+    label { font-weight: 700; }
+    .preview {
+      width: 100%; aspect-ratio: 16 / 9; background: #000;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden; margin-bottom: 16px;
+    }
+    .preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .preview .empty { color: #999; font-size: 0.9rem; }
+    input[type="text"], input[type="number"] {
+      padding: 8px; border: 2px solid currentColor; background: transparent; color: inherit;
+      min-height: 40px; font-size: 1rem;
+    }
+    input[type="range"] { width: 100%; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    button { padding: 10px 16px; min-height: 44px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #status { min-height: 1.2em; font-size: 0.9rem; }
+    #status.error { color: #c0392b; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="preview" id="preview"><span class="empty">No thumbnail rendered yet.</span></div>
+
+  <div class="row">
+    <label for="frame">Frame at <span id="frameLabel">0.0</span>s</label>
+    <input type="range" id="frame" min="0" max="0" step="0.1" value="0" />
+  </div>
+
+  <div class="row inline">
+    <input type="checkbox" id="showOverlay" />
+    <label for="showOverlay">Draw the title</label>
+  </div>
+
+  <div class="row inline">
+    <input type="checkbox" id="showCaptions" />
+    <label for="showCaptions">Show captions</label>
+  </div>
+
+  <div class="row">
+    <label for="extra">Extra line (thumbnail only)</label>
+    <input type="text" id="extra" placeholder="Optional text drawn on the still" />
+  </div>
+
+  <p id="status"></p>
+
+  <div class="actions">
+    <button id="render" type="button">Render</button>
+    <button id="save" type="button">Save settings</button>
+    <button id="close" type="button">Close</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
