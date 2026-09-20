@@ -3,17 +3,13 @@
 Draws one still per clip and stores it on the clip, as an open-clip plugin.
 
 This directory is what would live in its own Git repository and be installed
-with:
-
-```
-python backend/cli.py plugin install <this repo's URL>
-# or: POST /plugins/install  {"url": "..."}
-```
-
-It is loaded on the next app start. The app never imports this code directly;
-the plugin registers a `thumbnails` pipeline step, the three
-`/project/{id}/clip/{index}/thumbnail` routes (GET/PUT/POST) the UI calls, and a
-cleanup hook that deletes a clip's still when the clip is deleted.
+from the app's Plugins page (or `POST /plugins/install {"url": "..."}`). It is
+loaded in place at once. The app never imports this code directly; the plugin
+registers a `thumbnails` pipeline step, a `render` action (run on the selected
+clips, or all, from the Plugins menu), the per-clip editor routes
+`/project/{id}/clip/{index}/thumbnail` (GET/PUT/POST) the dialog uses, a
+`thumbnail` UI screen (the editor dialog), and a cleanup hook that deletes a
+clip's still when the clip is deleted.
 
 ## What it touches
 
@@ -28,12 +24,21 @@ It imports nothing from the application. Rendering (frame extraction, crop/scale
 to match the clip, title overlay) is vendored in `render.py` and shells out to
 `ffmpeg`/`ffprobe`.
 
-## Known differences from the old in-app thumbnailer
+## Framing and fidelity
 
-- **Centre crop, no subject detection.** The in-app renderer centred its crop on
-  a person detected with a YOLO model (`cv2` + `ultralytics`). Carrying that
-  model here would pull in its whole dependency stack, so the still is centre
-  cropped. For a shot framed roughly centre the difference is small.
-- **Overlay only.** The `show_captions` option (burning the transcript onto the
-  still) needs the word map and caption styling, which live in the app. The
-  plugin draws the title overlay, which is the thumbnail's job.
+- **Subject-centred crop.** The still is framed on the same subject the clip is,
+  using the app's own detection: the plugin asks the host for the subject centre
+  (data) and crops to it, rather than shipping the YOLO model. It falls back to a
+  centre crop when nothing is found or the source is missing.
+- **Title in the project's overlay style.** The title (and any extra line) is
+  drawn with the clip's overlay style — font, size, position, colour, outline,
+  the marked `*word*` — so the still's title matches the video's. The one thing
+  the plugin cannot read is the font's height ratio (a font-metrics lookup that
+  lives in the app), so the title size can differ by a few percent; libass
+  resolves the same face.
+
+## Not supported
+
+- **Captions on the still.** A thumbnail here is a frame with its *title*, not
+  the rolling subtitles. The `show_captions` setting is carried but the render
+  does not burn transcript captions onto the still.

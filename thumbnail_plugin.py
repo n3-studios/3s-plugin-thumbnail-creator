@@ -103,21 +103,6 @@ def _title_overlay(highlight: dict, settings: dict):
     return {**_DEFAULT_OVERLAY, **base, "enabled": True, "text": text[:200]}
 
 
-def _burn_text(overlay, settings: dict) -> str:
-    """The plain text ffmpeg burns: the title, then any extra line.
-
-    The asterisks the model marks a word with are for the app's coloured
-    renderer; here they would just print, so they are dropped.
-    """
-    parts = []
-    if overlay and (overlay.get("text") or "").strip():
-        parts.append(overlay["text"].strip())
-    extra = settings.get("extra")
-    if isinstance(extra, dict) and (extra.get("text") or "").strip():
-        parts.append(extra["text"].strip())
-    return " ".join(parts).replace("*", "")[:200]
-
-
 class ThumbnailStep:
     """The pipeline step: draw every clip's still. Runs on the plugin `host`."""
 
@@ -140,7 +125,20 @@ class ThumbnailStep:
         at = _frame_time(highlight, settings)
         filename = f"clip_{index:03d}.jpg"
         output = meta.project_dir() / DIRECTORY / filename
-        overlay = _title_overlay(highlight, settings)
+
+        # The title (in the project's overlay style) and any extra line, drawn
+        # as the app draws an overlay.
+        overlays = []
+        title = _title_overlay(highlight, settings)
+        if title:
+            overlays.append(title)
+        extra = settings.get("extra")
+        if isinstance(extra, dict) and (extra.get("text") or "").strip():
+            overlays.append(extra)
+
+        # Framed on the same subject the clip is cut around, from core's own
+        # detection; None (nothing found / no source) falls back to centre.
+        subject = meta.subject_center(index)
 
         render.render_still(
             input_path=str(source),
@@ -150,7 +148,8 @@ class ThumbnailStep:
             resolution=project_settings.get("resolution", "keep original"),
             layout=project_settings.get("clip_layout", "fill"),
             band_dim_pct=project_settings.get("band_dim_pct"),
-            title=_burn_text(overlay, settings),
+            overlays=overlays,
+            subject=tuple(subject) if subject else None,
         )
 
         settings["generated_filename"] = filename
